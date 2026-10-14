@@ -39,7 +39,7 @@ BASE_URL = "https://boc2027xzks.campustest.cn/"
 FULL_PATTERN = re.compile(r"预约已满|已满|满员|无余位|余位[:：]?\s*0(?!\d)|剩余[:：]?\s*0(?!\d)|不可预约|Full", re.I)
 SUBMIT_BTN_PATTERN = re.compile(r"^\s*(确认预约|提交预约|确定预约|立即预约|预约|提交|确认|确定|下一步)\s*$")
 CONFIRM_BTN_PATTERN = re.compile(r"^\s*(确定|确认|确 定|确认预约|提交|是|OK|Confirm)\s*$", re.I)
-ENTRY_PATTERN = re.compile(r"考位预约|预约考位|考试预约|去预约|立即预约|选择考点|考点预约")
+ENTRY_PATTERN = re.compile(r"马上预约|考位预约|预约考位|考试预约|去预约|立即预约|选择考点|考点预约")
 
 DEBUG_DIR = Path(__file__).with_name("debug")
 
