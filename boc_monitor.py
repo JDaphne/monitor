@@ -139,28 +139,35 @@ def active_page(ctx):
     return pages[-1]
 
 
-def looks_like_booking_page(page, keywords, home_url):
-    if page.url == home_url:
-        return False
-    if page_has_keyword(page, keywords):
-        return True
+DEFAULT_BOOKING_URL = "https://c.exam-sp.com/t/default/order/exam"
+
+
+def is_booking_page(page):
+    """预约页的标志：有“选择考区”输入框。"""
     try:
-        if page.locator("select:visible, .el-select:visible, .ant-select:visible").count() > 0:
-            return True
-        body = page.inner_text("body", timeout=3000)
+        return page.locator("input[placeholder*=考区]:visible").count() > 0
     except PWError:
         return False
-    return bool(re.search(r"考点|考场|场次|考试城市", body))
 
 
-def open_booking_page(ctx, booking_url, keywords, timeout_s):
-    page = active_page(ctx)
-    if booking_url:
-        page.goto(booking_url, wait_until="domcontentloaded")
+def wait_booking_page(ctx, timeout_s):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        page = active_page(ctx)
+        if is_booking_page(page):
+            return page
+        time.sleep(1)
+    return None
+
+
+def open_booking_page(ctx, booking_url, timeout_s):
+    # 1) 登录后可能已经直接在预约页
+    page = wait_booking_page(ctx, 3)
+    if page:
         return page
-    page.wait_for_timeout(1500)
-    home_url = page.url
-    entry = page.locator("a, button, span, div").filter(has_text=ENTRY_PATTERN)
+    page = active_page(ctx)
+    # 2) 点“马上预约”等入口
+    entry = page.locator("a, button, span, li").filter(has_text=ENTRY_PATTERN)
     for i in range(min(entry.count(), 20)):
         el = entry.nth(i)
         try:
@@ -168,23 +175,25 @@ def open_booking_page(ctx, booking_url, keywords, timeout_s):
             if el.is_visible() and len(txt) <= 12:
                 log(f"点击入口：{txt}")
                 el.click()
-                time.sleep(3)
-                if looks_like_booking_page(active_page(ctx), keywords, home_url):
-                    return active_page(ctx)
+                page = wait_booking_page(ctx, 8)
+                if page:
+                    return page
                 break
         except PWError:
             continue
-    log("没找到预约入口。请在浏览器中手动进入考位预约页面（选择考点/考位的那一页），脚本会自动检测……")
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        time.sleep(2)
-        page = active_page(ctx)
-        try:
-            if looks_like_booking_page(page, keywords, home_url):
-                time.sleep(2)  # 等页面加载完
-                return active_page(ctx)
-        except PWError:
-            continue  # 页面正在跳转
+    # 3) 直接打开预约页地址
+    try:
+        active_page(ctx).goto(booking_url or DEFAULT_BOOKING_URL, wait_until="domcontentloaded")
+        page = wait_booking_page(ctx, 10)
+        if page:
+            return page
+    except PWError:
+        pass
+    # 4) 让用户手动进入
+    log("没能自动进入预约页。请在浏览器中点“马上预约”，进入有“选择考区”的那一页，脚本会自动检测……")
+    page = wait_booking_page(ctx, timeout_s)
+    if page:
+        return page
     raise RuntimeError("等待进入预约页超时。")
 
 
@@ -426,8 +435,8 @@ def main():
         ctx.on("page", setup_page)
 
         login(page, user, args.password, timeout_s=300)
-        page = open_booking_page(ctx, args.booking_url, keywords, timeout_s=600)
-        booking_url = args.booking_url or page.url
+        page = open_booking_page(ctx, args.booking_url, timeout_s=600)
+        booking_url = page.url
         log(f"预约页：{booking_url}")
         dump(page, "booking_page")
 
