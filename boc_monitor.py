@@ -36,8 +36,8 @@ from playwright.sync_api import sync_playwright
 
 BASE_URL = "https://boc2027xzks.campustest.cn/"
 
-FULL_PATTERN = re.compile(r"已满|满员|无余位|余位[:：]?\s*0(?!\d)|剩余[:：]?\s*0(?!\d)|不可预约|Full", re.I)
-BOOK_BTN_PATTERN = re.compile(r"^\s*(预约|立即预约|选择|选定|确认预约|报名)\s*$")
+FULL_PATTERN = re.compile(r"预约已满|已满|满员|无余位|余位[:：]?\s*0(?!\d)|剩余[:：]?\s*0(?!\d)|不可预约|Full", re.I)
+SUBMIT_BTN_PATTERN = re.compile(r"^\s*(确认预约|提交预约|确定预约|立即预约|预约|提交|确认|确定|下一步)\s*$")
 CONFIRM_BTN_PATTERN = re.compile(r"^\s*(确定|确认|确 定|确认预约|提交|是|OK|Confirm)\s*$", re.I)
 ENTRY_PATTERN = re.compile(r"考位预约|预约考位|考试预约|去预约|立即预约|选择考点|考点预约")
 
@@ -198,88 +198,38 @@ def page_has_keyword(page, keywords):
 
 # ---------------------------------------------------------------- 查找并预约
 
-def pick_city_in_selects(page, keywords):
-    """如果城市/考点是 <select> 下拉框，选中包含关键字的选项。"""
-    picked = False
-    selects = page.locator("select:visible")
-    for i in range(selects.count()):
-        sel = selects.nth(i)
-        try:
-            opts = sel.locator("option").all_inner_texts()
-        except PWError:
-            continue
-        for opt in opts:
-            if any(k.lower() in opt.lower() for k in keywords):
-                sel.select_option(label=opt)
-                page.wait_for_timeout(1200)
-                picked = True
-                break
-    return picked
+def section(page, title_re):
+    """预约页由若干 .info 区块组成，每块有 .title（如“选择考区”“选择考点”）。"""
+    return page.locator(".reservation .info").filter(
+        has=page.locator(".title", has_text=re.compile(title_re)))
 
 
-def pick_city_in_custom_dropdowns(page, keywords):
-    """Element-UI / Ant Design 等自定义下拉：点击包含关键字的下拉项。"""
-    pattern = re.compile("|".join(re.escape(k) for k in keywords), re.I)
-    items = page.locator(
-        ".el-select-dropdown__item, .ant-select-item-option, li[role=option], .dropdown-item"
-    ).filter(has_text=pattern)
-    if items.count() == 0:
-        # 先展开所有下拉框，让选项渲染出来
-        for trig in page.locator(".el-select:visible, .ant-select:visible").all()[:5]:
-            try:
-                trig.click()
-                page.wait_for_timeout(500)
-                items = page.locator(
-                    ".el-select-dropdown__item:visible, .ant-select-item-option:visible, li[role=option]:visible"
-                ).filter(has_text=pattern)
-                if items.count() > 0:
-                    break
-                page.keyboard.press("Escape")
-            except PWError:
-                continue
-    for i in range(items.count()):
-        it = items.nth(i)
-        try:
-            if it.is_visible() and "disabled" not in (it.get_attribute("class") or ""):
-                it.click()
-                page.wait_for_timeout(1200)
-                return True
-        except PWError:
-            continue
-    return False
+def select_city(page, city):
+    inp = page.locator("input[placeholder*=考区]").first
+    inp.wait_for(state="visible", timeout=15000)
+    if inp.input_value().strip() == city:
+        return
+    opt = page.locator(".regionList > div").filter(has_text=re.compile(f"^\\s*{re.escape(city)}\\s*$"))
+    if not opt.first.is_visible():
+        inp.click()
+        page.wait_for_timeout(500)
+    opt.first.click()
+    page.wait_for_timeout(1500)
 
 
-def find_available_rows(page, keywords):
-    """返回包含关键字、未标记为已满、且带有可点击“预约/选择”按钮的行/卡片中的按钮。"""
-    pattern = re.compile("|".join(re.escape(k) for k in keywords), re.I)
-    rows = page.locator("tr, li, .card, .el-card, .ant-card, .item, [class*=row], [class*=item]") \
-        .filter(has_text=pattern)
-    found = []
-    for i in range(min(rows.count(), 200)):
-        row = rows.nth(i)
-        try:
-            if not row.is_visible():
-                continue
-            text = row.inner_text(timeout=1000)
-            if len(text) > 400:  # 太大，多半是整个容器而非单行
-                continue
-            if FULL_PATTERN.search(text):
-                continue
-            btns = row.locator("button, a, span, div[role=button], input[type=button]") \
-                .filter(has_text=BOOK_BTN_PATTERN)
-            for j in range(btns.count()):
-                b = btns.nth(j)
-                if b.is_visible() and b.is_enabled() and not is_disabled_like(b):
-                    found.append((text.replace("\n", " | ")[:150], b))
-                    break
-            else:
-                # 有的系统用单选框/复选框选场次
-                radio = row.locator("input[type=radio]:not([disabled]), .el-radio:not(.is-disabled)")
-                if radio.count() > 0:
-                    found.append((text.replace("\n", " | ")[:150], radio.first))
-        except PWError:
-            continue
-    return found
+def session_items(page):
+    """考区下面的场次（如“北京时间10月19日00:00场-纽约”）。"""
+    sec = page.locator(".reservation .info").filter(has=page.locator(".title", has_text="金融综合类"))
+    return sec.locator(".list > div")
+
+
+def venue_cards(page):
+    """“选择考点”区块中的考点卡片。"""
+    sec = section(page, "选择考点")
+    cards = sec.locator(".list > div")
+    if cards.count() == 0:
+        cards = sec.locator(":scope > div:not(.title) > div")
+    return cards
 
 
 def is_disabled_like(locator):
@@ -319,27 +269,97 @@ def booking_succeeded(page):
     return bool(re.search(r"预约成功|已预约|预约结果|准考证|Success", body, re.I))
 
 
-def try_book(page, keywords, dry_run):
-    pick_city_in_selects(page, keywords) or pick_city_in_custom_dropdowns(page, keywords)
-    candidates = find_available_rows(page, keywords)
-    if not candidates:
-        return False
-    for desc, btn in candidates:
-        log(f"发现可约考位：{desc}")
-        if dry_run:
-            return True
-        try:
-            btn.click(timeout=3000)
-        except PWError as e:
-            log(f"点击失败：{e}")
-            continue
-        click_confirms(page)
-        page.wait_for_timeout(1500)
-        dump(page, "after_book")
-        if booking_succeeded(page):
-            return True
-        log("未检测到“预约成功”字样，请查看浏览器/截图确认。")
+def ensure_on_booking_page(page, booking_url):
+    """刷新后如果不在预约页（如被跳回选批次页），尝试回到预约页；必要时等用户手动点进去。"""
+    inp = page.locator("input[placeholder*=考区]")
+    try:
+        inp.first.wait_for(state="visible", timeout=10000)
         return True
+    except PWTimeout:
+        pass
+    log("当前不在预约页，尝试重新进入……")
+    dump(page, "lost_booking_page")
+    for target in (booking_url, "https://c.exam-sp.com/t/default/order/chooseBatch"):
+        try:
+            page.goto(target, wait_until="domcontentloaded")
+            inp.first.wait_for(state="visible", timeout=10000)
+            return True
+        except (PWError, PWTimeout):
+            continue
+    log("请在浏览器中手动点进“马上预约”→ 选考区的那一页（最多等 5 分钟）……")
+    try:
+        inp.first.wait_for(state="visible", timeout=300000)
+        return True
+    except PWTimeout:
+        return False
+
+
+def card_is_full(card):
+    try:
+        text = card.inner_text(timeout=2000)
+    except PWError:
+        return True
+    return bool(FULL_PATTERN.search(text)) or is_disabled_like(card)
+
+
+def click_submit(page):
+    """选中考点后点击页面上的提交/确认预约按钮（只点可见的按钮，跳过隐藏弹窗里的）。"""
+    btns = page.locator(".reservation button:visible, .right_container button:visible, "
+                        ".el-dialog__wrapper:visible button:visible") \
+        .filter(has_text=SUBMIT_BTN_PATTERN)
+    for i in range(btns.count() - 1, -1, -1):
+        b = btns.nth(i)
+        try:
+            if b.is_enabled() and not is_disabled_like(b):
+                log(f"点击：{b.inner_text(timeout=500).strip()}")
+                b.click(timeout=3000)
+                return True
+        except PWError:
+            continue
+    return False
+
+
+def try_book(page, city, dry_run, verbose):
+    select_city(page, city)
+    sessions = session_items(page)
+    try:
+        sessions.first.wait_for(state="visible", timeout=10000)
+    except PWTimeout:
+        log("选了考区但没有出现场次。")
+        return False
+    for si in range(sessions.count()):
+        sess = sessions.nth(si)
+        sess_text = sess.inner_text().replace("\n", "")
+        if "selected" not in (sess.get_attribute("class") or ""):
+            sess.click()
+            page.wait_for_timeout(1500)
+        cards = venue_cards(page)
+        try:
+            cards.first.wait_for(state="visible", timeout=10000)
+        except PWTimeout:
+            log(f"场次 {sess_text} 下没有出现考点。")
+            continue
+        for ci in range(cards.count()):
+            card = cards.nth(ci)
+            lines = [ln.strip() for ln in card.inner_text().split("\n") if ln.strip()]
+            name = next((ln for ln in lines if not FULL_PATTERN.search(ln)), "考点")
+            if card_is_full(card):
+                if verbose:
+                    log(f"  {sess_text} / {name}：已满")
+                continue
+            log(f"发现可约考位：{sess_text} / {name}")
+            if dry_run:
+                return True
+            card.click()
+            page.wait_for_timeout(800)
+            if not click_submit(page):
+                log("没找到提交按钮，请立即在浏览器中手动点击提交！")
+            click_confirms(page)
+            page.wait_for_timeout(1500)
+            dump(page, "after_book")
+            if not booking_succeeded(page):
+                log("未检测到“预约成功”字样，请查看浏览器确认。")
+            return True
     return False
 
 
@@ -349,6 +369,7 @@ def main():
     ap = argparse.ArgumentParser(description="中行校招考试纽约考位监控/自动预约")
     ap.add_argument("--user", default=os.getenv("BOC_USER"), help="证件号码（或环境变量 BOC_USER）")
     ap.add_argument("--password", default=os.getenv("BOC_PASS"), help="手机号后 6 位（或环境变量 BOC_PASS）")
+    ap.add_argument("--city", default="纽约", help="考区名称（与页面上显示的一致），默认 纽约")
     ap.add_argument("--keywords", default="纽约,New York,NewYork,NYC", help="考点关键字，逗号分隔")
     ap.add_argument("--booking-url", default=None, help="预约页面完整 URL（可选）")
     ap.add_argument("--interval", type=float, default=20, help="刷新间隔秒数（会加随机抖动），默认 20")
@@ -419,7 +440,9 @@ def main():
                     log("登录已失效，重新登录……")
                     login(page, user, args.password, timeout_s=300)
                     page.goto(booking_url, wait_until="domcontentloaded")
-                if try_book(page, keywords, args.dry_run):
+                if not ensure_on_booking_page(page, booking_url):
+                    continue
+                if try_book(page, args.city, args.dry_run, verbose=(n % 10 == 1)):
                     msg = "纽约考位有空位！" + ("（仅提醒，请立即手动预约）" if args.dry_run else "已尝试自动预约，请立即核对！")
                     notify(msg, args.notify_url)
                     dump(page, "found")
