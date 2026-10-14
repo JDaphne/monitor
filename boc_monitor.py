@@ -63,6 +63,15 @@ def notify(msg, url):
             log(f"推送失败: {e}")
 
 
+def wait_enter(prompt, fallback_s):
+    """等待回车；在 Jupyter 的 !python 等无法输入的环境下改为等待 fallback_s 秒。"""
+    try:
+        input(prompt)
+    except EOFError:
+        log(f"（无法读取键盘输入，{fallback_s} 秒后继续）")
+        time.sleep(fallback_s)
+
+
 def dump(page, tag):
     DEBUG_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%m%d_%H%M%S")
@@ -372,9 +381,9 @@ def main():
                     notify(msg, args.notify_url)
                     dump(page, "found")
                     if args.dry_run:
-                        input("按回车继续监控……")
+                        wait_enter("按回车继续监控……", 60)
                     else:
-                        input("请在浏览器中确认预约结果，按回车退出。")
+                        wait_enter("请在浏览器中确认预约结果，按回车退出。", 1800)
                         return
                 else:
                     log(f"第 {n} 次检查：暂无可约纽约考位")
