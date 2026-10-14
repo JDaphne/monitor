@@ -48,9 +48,9 @@ def log(msg):
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
 
-def notify(msg, url):
+def notify(msg, url, beep=True):
     """终端响铃 + 可选推送（Bark / Server 酱 / 任意 GET webhook，{msg} 会被替换）。"""
-    for _ in range(5):
+    for _ in range(5 if beep else 0):
         sys.stdout.write("\a")
         sys.stdout.flush()
         time.sleep(0.2)
@@ -435,6 +435,8 @@ def main():
         log(f"预约页：{page.url}")
         dump(page, "booking_page")
 
+        if args.notify_url:
+            notify("纽约考位监控已启动（推送测试）", args.notify_url, beep=False)
         n = 0
         while time.time() < end_ts:
             n += 1
@@ -470,4 +472,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        log(f"脚本异常退出：{e}")
+        notify(f"监控脚本异常退出，请检查电脑：{str(e)[:80]}", os.getenv("BOC_NOTIFY_URL"))
+        raise

@@ -38,7 +38,7 @@ $env:BOC_USER="E12345678"; $env:BOC_PASS="123456"; python boc_monitor.py
 | `--dry-run` | 只提醒、不自动点击预约（建议先用这个模式试跑一次） |
 | `--interval 15` | 刷新间隔秒数（请勿设得太小，以免被风控） |
 | `--city 纽约` | 考区名称（与页面上显示的一致） |
-| `--notify-url "https://api.day.app/<你的key>/{msg}"` | 手机推送（Bark / Server 酱等任意 GET 地址） |
+| `--notify-url "https://api.day.app/<你的key>/{msg}?call=1"` | 手机推送（Bark 等任意 GET 地址；也可设环境变量 `BOC_NOTIFY_URL`，脚本异常退出时也会推送） |
 | `--end "2026-10-16 11:00"` | 截止时间（按本机时区；非北京时间请设 `TZ=Asia/Shanghai`） |
 
 ## 注意
