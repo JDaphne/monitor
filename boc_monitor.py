@@ -337,12 +337,18 @@ def main():
         log("提示：本机不是北京时间，--end 会按本机时区解释，可设置 TZ=Asia/Shanghai。")
 
     with sync_playwright() as p:
-        ctx = p.chromium.launch_persistent_context(
+        launch_kw = dict(
             user_data_dir=str(Path(__file__).with_name(".browser_profile")),
             headless=args.headless,
             viewport={"width": 1366, "height": 900},
             locale="zh-CN",
         )
+        try:
+            # 优先使用电脑上已安装的 Google Chrome，无需 playwright install
+            ctx = p.chromium.launch_persistent_context(channel="chrome", **launch_kw)
+        except PWError:
+            log("未找到 Google Chrome，改用 Playwright 自带的 Chromium。")
+            ctx = p.chromium.launch_persistent_context(**launch_kw)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         page.on("dialog", lambda d: (log(f"弹窗：{d.message}"), d.accept()))
 

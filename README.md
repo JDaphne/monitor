@@ -9,7 +9,7 @@
 
 ```bash
 pip install -r requirements.txt
-python -m playwright install chromium
+python -m playwright install chromium   # 已安装 Google Chrome 可跳过
 ```
 
 ## 运行
