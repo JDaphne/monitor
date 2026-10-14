@@ -131,11 +131,35 @@ def login(page, user, pwd, timeout_s):
 
 # ---------------------------------------------------------------- 进入预约页
 
-def open_booking_page(page, booking_url, keywords, timeout_s):
+def active_page(ctx):
+    """返回最新打开且未关闭的标签页（网站可能在新标签/新窗口中打开预约页）。"""
+    pages = [pg for pg in ctx.pages if not pg.is_closed()]
+    if not pages:
+        raise RuntimeError("浏览器窗口已被关闭，请重新运行脚本（运行期间不要关闭它）。")
+    return pages[-1]
+
+
+def looks_like_booking_page(page, keywords, home_url):
+    if page.url == home_url:
+        return False
+    if page_has_keyword(page, keywords):
+        return True
+    try:
+        if page.locator("select:visible, .el-select:visible, .ant-select:visible").count() > 0:
+            return True
+        body = page.inner_text("body", timeout=3000)
+    except PWError:
+        return False
+    return bool(re.search(r"考点|考场|场次|考试城市", body))
+
+
+def open_booking_page(ctx, booking_url, keywords, timeout_s):
+    page = active_page(ctx)
     if booking_url:
         page.goto(booking_url, wait_until="domcontentloaded")
-        return
+        return page
     page.wait_for_timeout(1500)
+    home_url = page.url
     entry = page.locator("a, button, span, div").filter(has_text=ENTRY_PATTERN)
     for i in range(min(entry.count(), 20)):
         el = entry.nth(i)
@@ -144,16 +168,23 @@ def open_booking_page(page, booking_url, keywords, timeout_s):
             if el.is_visible() and len(txt) <= 12:
                 log(f"点击入口：{txt}")
                 el.click()
-                page.wait_for_timeout(2000)
-                return
+                time.sleep(3)
+                if looks_like_booking_page(active_page(ctx), keywords, home_url):
+                    return active_page(ctx)
+                break
         except PWError:
             continue
-    log("没找到预约入口。请在浏览器中手动进入考位预约页面，脚本会自动检测……")
+    log("没找到预约入口。请在浏览器中手动进入考位预约页面（选择考点/考位的那一页），脚本会自动检测……")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if page_has_keyword(page, keywords) or page.locator("select:visible").count() > 0:
-            return
-        page.wait_for_timeout(2000)
+        time.sleep(2)
+        page = active_page(ctx)
+        try:
+            if looks_like_booking_page(page, keywords, home_url):
+                time.sleep(2)  # 等页面加载完
+                return active_page(ctx)
+        except PWError:
+            continue  # 页面正在跳转
     raise RuntimeError("等待进入预约页超时。")
 
 
@@ -350,7 +381,6 @@ def main():
             log("未找到 Google Chrome，改用 Playwright 自带的 Chromium。")
             ctx = p.chromium.launch_persistent_context(**launch_kw)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.on("dialog", lambda d: (log(f"弹窗：{d.message}"), d.accept()))
 
         # 把含关键字的接口响应记下来，便于后续改成直接调接口
         def on_response(resp):
@@ -366,10 +396,16 @@ def main():
                                             "method": resp.request.method,
                                             "post": resp.request.post_data,
                                             "body": body[:5000]}, ensure_ascii=False) + "\n")
-        page.on("response", on_response)
+        def setup_page(pg):
+            pg.on("dialog", lambda d: (log(f"弹窗：{d.message}"), d.accept()))
+            pg.on("response", on_response)
+
+        for pg in ctx.pages:
+            setup_page(pg)
+        ctx.on("page", setup_page)
 
         login(page, user, args.password, timeout_s=300)
-        open_booking_page(page, args.booking_url, keywords, timeout_s=600)
+        page = open_booking_page(ctx, args.booking_url, keywords, timeout_s=600)
         booking_url = args.booking_url or page.url
         log(f"预约页：{booking_url}")
         dump(page, "booking_page")
@@ -378,6 +414,7 @@ def main():
         while time.time() < end_ts:
             n += 1
             try:
+                page = active_page(ctx)
                 if login_form_visible(page):
                     log("登录已失效，重新登录……")
                     login(page, user, args.password, timeout_s=300)
