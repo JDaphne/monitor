@@ -9,8 +9,8 @@
 
 脚本以「有界面」模式打开浏览器：
   1. 自动填写用户名/密码；如有验证码，请在弹出的浏览器里手动完成并点登录，脚本会自动等待。
-  2. 登录后进入考位预约页（可用 --booking-url 指定；否则自动点击含“预约”字样的入口，
-     若找不到，请手动点进预约页面，脚本会等待你）。
+  2. 登录后点击“马上预约”进入选择考区的页面（预约页不能直接打开或刷新，
+     所以每轮检查都会重新点一次“马上预约”）。
   3. 每隔 --interval 秒刷新一次，查找包含关键字（默认“纽约”/“New York”）且未满的考位，
      一旦发现可约，立即点击“预约/选择”并点击后续“确定/确认/提交”按钮，然后截图并报警。
 
@@ -139,7 +139,7 @@ def active_page(ctx):
     return pages[-1]
 
 
-DEFAULT_BOOKING_URL = "https://c.exam-sp.com/t/default/order/exam"
+CHOOSE_BATCH_URL = "https://c.exam-sp.com/t/default/order/chooseBatch"
 
 
 def is_booking_page(page):
@@ -150,50 +150,72 @@ def is_booking_page(page):
         return False
 
 
-def wait_booking_page(ctx, timeout_s):
+def dismiss_dialogs(page):
+    """关掉“报考配置获取失败”等提示弹窗，返回弹窗文字。"""
+    msgs = []
+    boxes = page.locator(".el-message-box__wrapper:visible, .el-dialog__wrapper:visible")
+    for i in range(boxes.count()):
+        box = boxes.nth(i)
+        try:
+            msgs.append(box.inner_text(timeout=1000).strip().replace("\n", " "))
+            btn = box.locator("button:visible").filter(has_text=re.compile(r"确\s*定|关闭|知道了"))
+            if btn.count():
+                btn.first.click(timeout=2000)
+            else:
+                page.keyboard.press("Escape")
+        except PWError:
+            continue
+    return msgs
+
+
+def enter_booking_page(page):
+    """
+    预约页不能直接打开或刷新（会提示“报考配置获取失败”），
+    必须点“马上预约”进入，它会自动跳到选择考区的页面。每轮检查都这样重新进一次。
+    """
+    for attempt in range(3):
+        for m in dismiss_dialogs(page):
+            log(f"关闭弹窗：{m[:60]}")
+        # 给旧页面打标记，确保后面读到的是重新加载的新页面，而不是旧数据
+        try:
+            page.evaluate("document.querySelectorAll('input').forEach(e => e.dataset.bocOld = '1')")
+        except PWError:
+            pass
+        link = page.locator("a[href*=chooseBatch]:visible")
+        try:
+            if link.count():
+                link.first.click(timeout=5000)
+            else:
+                page.goto(CHOOSE_BATCH_URL, wait_until="domcontentloaded")
+        except PWError as e:
+            log(f"进入“马上预约”失败：{e}")
+            continue
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            page.wait_for_timeout(500)
+            if page.locator(".el-message-box__wrapper:visible").count():
+                break  # 出现报错弹窗，重试
+            if is_booking_page(page) and \
+                    page.locator("input[placeholder*=考区][data-boc-old]").count() == 0:
+                page.wait_for_timeout(500)
+                return True
+        if login_form_visible(page):
+            return False
+        time.sleep(2 * (attempt + 1))
+    return False
+
+
+def open_booking_page(ctx, timeout_s):
+    page = active_page(ctx)
+    if enter_booking_page(page):
+        return page
+    log("没能自动进入预约页。请在浏览器中点“马上预约”，进入有“选择考区”的那一页，脚本会自动检测……")
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         page = active_page(ctx)
         if is_booking_page(page):
             return page
         time.sleep(1)
-    return None
-
-
-def open_booking_page(ctx, booking_url, timeout_s):
-    # 1) 登录后可能已经直接在预约页
-    page = wait_booking_page(ctx, 3)
-    if page:
-        return page
-    page = active_page(ctx)
-    # 2) 点“马上预约”等入口
-    entry = page.locator("a, button, span, li").filter(has_text=ENTRY_PATTERN)
-    for i in range(min(entry.count(), 20)):
-        el = entry.nth(i)
-        try:
-            txt = el.inner_text(timeout=500).strip()
-            if el.is_visible() and len(txt) <= 12:
-                log(f"点击入口：{txt}")
-                el.click()
-                page = wait_booking_page(ctx, 8)
-                if page:
-                    return page
-                break
-        except PWError:
-            continue
-    # 3) 直接打开预约页地址
-    try:
-        active_page(ctx).goto(booking_url or DEFAULT_BOOKING_URL, wait_until="domcontentloaded")
-        page = wait_booking_page(ctx, 10)
-        if page:
-            return page
-    except PWError:
-        pass
-    # 4) 让用户手动进入
-    log("没能自动进入预约页。请在浏览器中点“马上预约”，进入有“选择考区”的那一页，脚本会自动检测……")
-    page = wait_booking_page(ctx, timeout_s)
-    if page:
-        return page
     raise RuntimeError("等待进入预约页超时。")
 
 
@@ -278,31 +300,6 @@ def booking_succeeded(page):
     return bool(re.search(r"预约成功|已预约|预约结果|准考证|Success", body, re.I))
 
 
-def ensure_on_booking_page(page, booking_url):
-    """刷新后如果不在预约页（如被跳回选批次页），尝试回到预约页；必要时等用户手动点进去。"""
-    inp = page.locator("input[placeholder*=考区]")
-    try:
-        inp.first.wait_for(state="visible", timeout=10000)
-        return True
-    except PWTimeout:
-        pass
-    log("当前不在预约页，尝试重新进入……")
-    dump(page, "lost_booking_page")
-    for target in (booking_url, "https://c.exam-sp.com/t/default/order/chooseBatch"):
-        try:
-            page.goto(target, wait_until="domcontentloaded")
-            inp.first.wait_for(state="visible", timeout=10000)
-            return True
-        except (PWError, PWTimeout):
-            continue
-    log("请在浏览器中手动点进“马上预约”→ 选考区的那一页（最多等 5 分钟）……")
-    try:
-        inp.first.wait_for(state="visible", timeout=300000)
-        return True
-    except PWTimeout:
-        return False
-
-
 def card_is_full(card):
     try:
         text = card.inner_text(timeout=2000)
@@ -380,7 +377,6 @@ def main():
     ap.add_argument("--password", default=os.getenv("BOC_PASS"), help="手机号后 6 位（或环境变量 BOC_PASS）")
     ap.add_argument("--city", default="纽约", help="考区名称（与页面上显示的一致），默认 纽约")
     ap.add_argument("--keywords", default="纽约,New York,NewYork,NYC", help="考点关键字，逗号分隔")
-    ap.add_argument("--booking-url", default=None, help="预约页面完整 URL（可选）")
     ap.add_argument("--interval", type=float, default=20, help="刷新间隔秒数（会加随机抖动），默认 20")
     ap.add_argument("--notify-url", default=os.getenv("BOC_NOTIFY_URL"),
                     help="推送 URL，{msg} 替换为消息，例如 https://api.day.app/<key>/{msg}")
@@ -435,9 +431,8 @@ def main():
         ctx.on("page", setup_page)
 
         login(page, user, args.password, timeout_s=300)
-        page = open_booking_page(ctx, args.booking_url, timeout_s=600)
-        booking_url = page.url
-        log(f"预约页：{booking_url}")
+        page = open_booking_page(ctx, timeout_s=600)
+        log(f"预约页：{page.url}")
         dump(page, "booking_page")
 
         n = 0
@@ -445,13 +440,14 @@ def main():
             n += 1
             try:
                 page = active_page(ctx)
-                if login_form_visible(page):
-                    log("登录已失效，重新登录……")
-                    login(page, user, args.password, timeout_s=300)
-                    page.goto(booking_url, wait_until="domcontentloaded")
-                if not ensure_on_booking_page(page, booking_url):
-                    continue
-                if try_book(page, args.city, args.dry_run, verbose=(n % 10 == 1)):
+                if n > 1 and not enter_booking_page(page):
+                    if login_form_visible(page):
+                        log("登录已失效，重新登录……")
+                        login(page, user, args.password, timeout_s=300)
+                        continue
+                    log("这一轮没能进入预约页，稍后重试。")
+                    dump(page, "lost_booking_page")
+                elif try_book(page, args.city, args.dry_run, verbose=(n % 10 == 1)):
                     msg = "纽约考位有空位！" + ("（仅提醒，请立即手动预约）" if args.dry_run else "已尝试自动预约，请立即核对！")
                     notify(msg, args.notify_url)
                     dump(page, "found")
@@ -469,15 +465,6 @@ def main():
                 dump(page, "error")
 
             time.sleep(args.interval * random.uniform(0.8, 1.3))
-            try:
-                page.reload(wait_until="domcontentloaded")
-                page.wait_for_timeout(1500)
-            except PWError as e:
-                log(f"刷新失败：{e}")
-                try:
-                    page.goto(booking_url, wait_until="domcontentloaded")
-                except PWError:
-                    pass
         log("已过预约截止时间，退出。")
         ctx.close()
 
